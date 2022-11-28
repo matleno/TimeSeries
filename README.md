@@ -1,4 +1,3 @@
-# TimeSeries
 <h1>Pharma Sales - classical & modern Time Series forecasting</h1>
 
 

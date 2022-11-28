@@ -1,0 +1,1869 @@
+---
+title: "pharma"
+author: "Matteo Lenoci"
+date: "18/12/2021"
+output:
+  rmdformats::downcute: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+dataset che contiene il totale delle vendite raccolte in un periodo che va dal 2014 al 2019 per una casa farmaceutica, dati mensili, che riguardano 57 farmaci raccolti nel dataset in categorie secondo la classificazione ATC (Anatomical Therapeutic Chemical) seguente:
+
+M01AB - Anti-inflammatory and antirheumatic products, non-steroids, Acetic acid derivatives and related substances
+
+M01AE - Anti-inflammatory and antirheumatic products, non-steroids, Propionic acid derivatives
+
+N02BA - Other analgesics and antipyretics, Salicylic acid and derivatives
+
+N02BE/B - Other analgesics and antipyretics, Pyrazolones and Anilides
+
+N05B - Psycholeptics drugs, Anxiolytic drugs
+
+N05C - Psycholeptics drugs, Hypnotics and sedatives drugs
+
+R03 - Drugs for obstructive airway diseases
+
+R06 - Antihistamines for systemic use
+
+per evitare di rendere l'analisi troppo lunga e ricorsiva, oltre che eccessivamente complessa, selezioniamo due categorie specifiche tra quelle elencate che possono essere d'interesse sia personale che comune, la categoria relativa agli **antinfiammatori non steroidei** specificamente a quelle che raccolgono l'acido acetico (farmaco decisamente diffuso), e quella relativa agli **antistaminici**, immaginando già da subito di trovare una stagionalità nella serie.
+
+inizieremo caricando i dati e poi subito con un'analisi esplorativa finalizzata a capire il comportamento delle nostre serie per poi effettuare direttamente un'analisi classica e successivamente l'analisi moderna
+
+da notare che andremo subito ad eliminare l'ultima riga del dataset; nella premessa dell'introduzione a questo dataset era precisato che i dati relativi all'ultimo periodo non fossero completi fino alla fine del mese.
+
+
+```{r}
+rm(list=ls(all=TRUE))
+
+library(readr)
+
+data<-read.table("C:/Users/matte/Downloads/salesmonthly.csv", sep=',', header=TRUE)
+
+data<-data[-70,]
+
+attach(data)
+
+
+```
+
+
+
+# Analisi esplorativa
+
+```{r }
+library(tseries)
+library(ggfortify)
+library(gridExtra)
+
+
+
+#M01AB acetic acid
+
+serie1<-ts(data$M01AB, start = c(2014,1), frequency=12)
+
+str(serie1)
+summary(serie1)
+
+#plot(serie1)
+
+a1<-autoplot(serie1, ts.geom = 'bar', fill='#9A0013', main = "Acetic Acid")
+
+
+#R06 antistaminici
+
+serie2<-ts(data$R06, start = c(2014,1), frequency=12)
+
+str(serie2)
+summary(serie2)
+
+#plot(serie2)
+
+a2<-autoplot(serie2, ts.geom = 'bar', fill='#0542BA', main = "Antihistamines")
+
+
+plots1 <- list(a1,a2)
+marrangeGrob(plots1, nrow = 2, ncol = 1, top=NULL)
+```
+## trend
+
+interpoliamo una retta di regressione per vedere subito il trend di fondo di prima approssimazione con un solo Beta.
+
+```{r}
+plot(serie1)
+reg=lm(serie1 ~ time(serie1))
+abline(reg, col=2, lwd=2)
+
+
+plot(serie2)
+reg=lm(serie2 ~ time(serie2))
+abline(reg, col=6, lwd=2)
+
+
+
+```
+\
+\
+
+## stagionalità
+
+ora vediamo un boxplot relativo ai singoli mesi per mettere in luce l'eventuale stagionalità (che nella serie degli antistaminici notiamo chiaramente)
+
+```{r}
+
+colori=1:12
+
+ts.plot.stag <- function(x = x) {
+season <- cycle(x)
+season.factor <- factor(season)
+ggplot() + 
+  geom_boxplot(mapping = aes(x = season.factor,
+                             y = x), fill=colori, alpha=0.5) +
+  labs(x = "Mesi",y = "vendite")
+}
+
+b1<-ts.plot.stag(serie1)
+ 
+ 
+b2<-ts.plot.stag(serie2)
+
+
+plots2 <- list(b1,b2)
+marrangeGrob(plots2, nrow = 2, ncol = 1, top = "Acetic Acid", bottom ="Antihistamines")
+```
+la serue degli antistaminici mostra per l'appunto una spiccata stagionalità primaverile, la serie sull'acido acetico invece sembra avere valori più alti verso periodi invernali ma restano comunque valori pressochè bilanciati indice del diffuso utilizzo durante tutto l'anno di questi farmaci.
+
+
+## periodogramma
+
+```{r}
+library(TSA)
+
+
+z1<-periodogram(serie1,ylab='acid acetic Periodogramma'); abline(0,1)
+1/z1$freq[2]
+
+
+z2<-periodogram(serie2,ylab='antistaminici Periodogramma'); abline(0,1)
+
+z2$freq
+
+1/z2$freq[6]
+
+
+```
+ci soffermiamo in particolare sul secondo periodogramma data la stagionalità marcata della serie, possiamo vedere un forte spike alla posizione 3, andando a divedere $\frac{1} {freq\;periodogramma}$ ricavata dall'oggetto creato e ci fornisce un risultato di 12, ovvero un ciclicità annuale della nostra serie a conferma di quanto visto fin'ora.
+\
+\
+
+# Analisi classica 
+
+## introduzione formule
+
+Per effettuare la nostra decompsizione nell'analisi classica su R abbiamo due opzioni, il comando decompose() e il comando stl()
+
+il decompose possiamo quasi configurarlo come una particolarità dell'stl, in quanto STL di default stima delle sotto-serie per la stagionalità e va ad effettuare una regressione loess (regressione polinomiale localizzata) per trovare il tasso di variazione su ogni sotto-serie.
+
+qualora invece utilizziamo nel comando l'opzione *periodic* il comportamento sarà quello di fare una media dando un peso uguale a tutti i punti.
+
+avendo utilizzato a lezione il comando decompose, nella nostra analisi utilizzeremo quello, in ogni caso, almeno per il modello additivo, guardiamo anche l'output dell'stl, ci accorgeremo che i risultati col decomponse (utilizzando per l'appunto *periodic*) si equivalgono.
+
+qualora volessimo utilizzare stl per un modello moltiplicativo ci basta effettuare una trasformata di **Box-Cox** e quindi un logaritmo per poi lanciare il comando STL senza l'attributo periodic.
+
+inoltre, dall'output del trend successivo ai grafici, possiamo vedere come STL  non vada a perdere i dati inziali e finali (a causa dell'uso delle medie mobili).
+
+\
+\
+\
+
+iniziamo con una decomposizione di un modello additivo per entrambe le nostre serie, i dati ci suggeriscono, almeno per la serie degli antistaminici, un modello moltiplicativo data la stagionalità variabile e con tendenza crescente, proseguiamo comunque a stimare per entrambe le serie entrambi i modelli e sceglieremo il migliore sulla base dei risultati dell'analisi della componente erratica.
+
+# Decomposizione modello additivo
+
+```{r}
+decomposizione.stl1<-stl(serie1, s.window = 'periodic')
+autoplot(decomposizione.stl1, ts.colour='blue', main = "stl serie acido acetico, additivo")
+
+
+classica.a1<-decompose(serie1)
+autoplot(classica.a1,main = "decompose serie acido acetico, additivo", ts.colour = "red")
+
+
+decomposizione.stl2<-stl(serie2, s.window = 'periodic')
+autoplot(decomposizione.stl2, ts.colour='blue', main = "stl serie antistaminici, additivo")
+
+
+classica.a2<-decompose(serie2)
+autoplot(classica.a2, main = "decompose serie antistaminici, additivo", ts.colour = "red")
+
+
+
+classica.a1$trend 
+
+decomposizione.stl1 
+
+
+
+```
+
+ci accorgiamo sia dall'output (nell'esempio soltanto sulla prima serie) che dai grafici di come il comando stl riesca a conservare i dati ad inizio e fine serie.
+
+continuiamo come detto utilizzando l'oggetto decompose per la nostra analisi.
+
+visualizziamo nei nostri output sempre per primo il modello relativo all'**acido acetico** e per secondo quello degli **antistaminici**
+
+estraiamo gli indici di stagionalità:
+
+ci danno il contributo della stagionalità per ciascun mese. Ricordiamo che siamo di fronte ad un modello additivo perciò sono indici ottenuti per sottrazione.
+
+```{r}
+indici.sa1<-classica.a1$figure
+indici.sa1
+
+indici.sa2<-classica.a2$figure
+indici.sa2
+
+```
+come dai grafici, ci accorgiamo di come per la serie degli antistaminici abbiamo nettamente valori più alti nei mesi primaverili.
+
+## Analisi residui modello additivo
+
+
+dalla teoria sappiamo che sulla nostra componente accidentale vogliamo ritrovare le seguenti ipotesi: 
+
+processo a media 0 
+
+$$ 
+E(\epsilon_t)=0
+\\
+VAR\,[E(\epsilon_t)]=\sigma^2_t
+\\
+COV[\epsilon_i\,; \epsilon_j]=0
+$$
+
+
+per fare questo, vediamo dapprima un'analisi grafica per poi procedere a specifici test
+
+## Analisi grafica residui
+
+
+inziamo con l'estrarre i residui, togliamo gli NA e andiamo poi a rappresentarli con un istogramma confrontandoli con una curva di densità normale
+
+
+
+
+
+```{r}
+library(ggpubr)
+
+residui.a1<-na.omit(classica.a1$random)
+summary(residui.a1)
+
+
+residui.a2<-na.omit(classica.a2$random)
+summary(residui.a2)
+
+
+d1.2<-autoplot(residui.a1, colour = 'steelblue', main = "Residui Acetic Acid")
+d2.2<-autoplot(residui.a2, colour = 'steelblue', main = "Residui Antistaminici")
+
+
+d1<-ggplot() +
+  geom_histogram(aes(x= residui.a1, y = stat(density)),color="darkblue", fill="lightblue") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.a1), sd = sd(residui.a1)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui acid acetic")
+
+
+d2<-ggplot() +
+  geom_histogram(aes(x= residui.a2, y = stat(density)),color="darkblue", fill="lightblue") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.a2), sd = sd(residui.a2)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui Antistaminici")
+
+plots4.1<-(list(d1.2,d2.2))
+marrangeGrob(plots4.1, nrow = 2, ncol=1)
+
+
+plots4.2<-list(d1,d2)
+marrangeGrob(plots4.2,nrow = 1, ncol=2)
+
+```
+
+In entrambi i casi sembra di essere lontani da una distribuzione normale, in particolare quella sugli antistaminici ha un andamento migliore se non fosse che risulta fortemente leptocurtica
+
+l'ipotesi dei nostri residui a media 0 è da verificare, inoltre i valori sono vicini allo zero ma il minimo e massimo oscillano molto.
+
+\
+\
+
+Procediamo con la standardizzazione dei residui anche per eliminare gli effetti dell'unità di misura.
+
+
+```{r}
+residui.a1.vec<-as.vector(residui.a1)
+res.stand.a1<-(residui.a1.vec-mean(residui.a1.vec))/(var(residui.a1.vec)^0.5)
+
+
+residui.a2.vec<-as.vector(residui.a2)
+res.stand.a2<-(residui.a2.vec-mean(residui.a2.vec))/(var(residui.a2.vec)^0.5)
+
+
+
+
+d3<-ggplot() +
+  geom_histogram(aes(x= res.stand.a1, y = stat(density)),color="darkblue", fill="#F7D400") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(res.stand.a1), sd = sd(res.stand.a1)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui stand Acid Acetic")
+
+
+d4<-ggplot() +
+  geom_histogram(aes(x= res.stand.a2, y = stat(density)),color="darkblue", fill="#F7D400") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(res.stand.a2), sd = sd(res.stand.a2)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui stand Antistaminici")
+
+plots5<-list(d3,d4)
+marrangeGrob(plots5,nrow = 1, ncol=2)
+
+
+
+summary(res.stand.a1)
+```
+
+**qqplot**
+
+andiamo a plottare i quantili empirici della distribuzione dei residui contro i quantili teorici di una normale.
+
+
+
+```{r}
+
+
+qqnorm(res.stand.a1, main = "Acetic Acid", col="red")
+qqline(res.stand.a1, col = "blue", lwd = 2)
+
+qqnorm(res.stand.a2, main = "Antistaminici", col="blue")
+qqline(res.stand.a2, col = "red", lwd = 2)
+
+
+
+```
+
+Anche qui è opportuno fare test specifici per supportare o meno l'ipotesi di noramlità.
+
+
+## Test sui Residui modello Additivo
+
+**test di specificazione**
+
+per verificare che il valore atteso dei residui sia 0
+
+```{r}
+#media per entrambi
+mean.res.a1<-mean(residui.a1)
+mean.res.a2<-mean(residui.a2)
+
+#numero osservazioni
+n.a1<-length(residui.a1)
+#n2.a2<-length(mean.res.a2)
+
+#varianza
+var1.a1<-(n.a1/(n.a1-1))*var(residui.a1)
+var2.a2<-(n.a1/(n.a1-1))*var(residui.a2)
+
+s.a1<-sqrt(var1.a1)
+s.a2<-sqrt(var2.a2)
+
+#valore test t per acetic acid
+test.t.a1<-(mean.res.a1/(s.a1/sqrt(n.a1)))
+pt(test.t.a1,n.a1-1,lower.tail=F)
+
+#valore test t per antistaminici
+test.t.a2<-(mean.res.a2/(s.a2/sqrt(n.a1)))
+pt(test.t.a2,n.a1-1,lower.tail=F)
+
+
+```
+i test ci consentono di concludere che la media dei residui non è significativamente diversa da 0
+
+**NORMALITÀ**
+
+**Shapiro-Wilk**
+
+test che possiamo vedere come il quadrato del coefficiente di correlazione in un diagramma quantile-quantile
+
+$$
+H0: \;distribuzione \;dei \;residui \;normale
+$$
+
+```{r}
+
+shapiro.test(res.stand.a1)
+shapiro.test(res.stand.a2)
+
+
+```
+
+
+nel primo caso il test ci suggerisce la normalità, nel secondo caso rifiutiamo l'ipotesi di normalità
+
+**Jarque-Bera**
+
+distribuzione asintotica di una combinazione dei cofficienti di **Skewness e Kurtosis** (asimmetria e curtosi) che si distribuisce seguendo una $\chi^2$ con n-1 g.d.l.
+
+$$
+S=Skewness
+\\
+K=Curtosi
+\\
+JB=\hat{S^2}+\hat{K^2}
+\\
+H0:\; (S=0) \; \cap\; (K=3)
+$$
+
+```{r}
+jarque.bera.test(res.stand.a1)
+jarque.bera.test(res.stand.a2)
+```
+
+anche il test di Jarque-Bera ci conferma la normalità della distribuzione della serie campionaria sull'acido acetico ma non sugli antistaminici.
+
+\
+**omoschedasticità**
+
+ovvero test di Breusch-Pagan, è un test che mira a verificare la costanza della varianza nel tempo
+
+Bisogna però precisare che il test assume la normalità dei residui e sulla base di questo fa una regressione lineare sulla varianza in funzione del tempo t
+
+risulterà quindi meno adatto alla serie sugli antistaminici data l'assenza di normalità.
+
+$$
+ln=\sigma^2_t=a+b_t
+\\
+H0:b=0
+\\
+H1:\;b\neq0
+$$
+\
+
+anche questa statistica sarà distribuita come una $\chi^2$
+
+
+
+```{r}
+library(lmtest)
+
+
+bptest(classica.a1$random~1, varformula = ~ 1 + classica.a1$seasonal+ classica.a1$trend)
+bptest(classica.a2$random~1, varformula = ~ 1 + classica.a2$seasonal+ classica.a2$trend)
+
+```
+
+il primo caso, quasi al limite, ci porta ad accettare l'ipotesi di omoschedasticità, nel secondo caso invece siamo in presenza di eteroschedasticità, il p value è molto piccolo.
+
+
+\
+\
+
+**Autocorrelazione**
+\
+\
+iniziamo tracciando i correlogrammi dei residui
+
+```{r}
+
+autoplot(acf(res.stand.a1, lag.max = 20, plot=FALSE), main="Acetic acid")
+
+autoplot(acf(res.stand.a2, lag.max = 20, plot=FALSE), main="Antistaminici")
+
+
+```
+
+nel caso della prima serie abbiamo un solo valore fuori dalle bande, anche se il comportamento della serie ci indica che qualcosa non è stato depurato correttamente, nel secondo grafico invece vediamo qualche valore in più che ci pone in dubbio. Andiamo ad effettuare gli ulteriori test
+
+**Ljun-Box** 
+
+la statistica test è una combinazione lineare dei valori dei coefficienti di autocorrelazione dei residui
+
+$$
+LB=n(n+2)\frac{\sum^k_{t=1}e^2}{n-t}
+\\
+H0: assenza\;di\;autocorrelazione
+$$
+
+sotto ipotesi nulla anche questa statistica test si distribuisce come una $\chi^2$ con k gradi di libertà
+
+```{r}
+Box.test(res.stand.a1, lag=12, type = "Ljung-Box")
+Box.test(res.stand.a2, lag=12, type = "Ljung-Box")
+
+```
+nel primo caso accettiamo l'ipotesi nulla H0, nel secondo caso invece la rifiutiamo anche se per pochissimo, questo primo test sembra confermare quanto visto graficamente
+
+**Box-Pierce**
+
+test simile al precedente, non a caso si tende a preferire il test Ljung-Box proprio perchè questo tende a convergere prima alla distribuzione asintotica.
+
+ce ne possiamo accorgere anche dalla formula della statistica test più semplificata:
+
+$$
+BP=n\sum^k_{t=1}e_t^2
+$$
+
+```{r}
+
+Box.test(res.stand.a1, lag=12, type = "Box-Pierce")
+Box.test(res.stand.a2, lag=12, type = "Box-Pierce")
+
+```
+in questo caso il test ci suggerisce in entrambi i casi di essere in assenza di autocorrelazione dei residui
+
+**Durbin-Watson**
+
+questo test è l'ultimo che vediamo per l'autocorrelazione dei residui
+
+
+$$
+db=\frac{\sum^n_{t=1}(e_t-e_{t-1}^2)}{\sum^n_{t=1}(e_t)^2}
+$$
+
+il modo più semplice per effettuarlo è utilizzando i risultati del decompose è far regredire i residui su una costante
+
+```{r}
+
+dwtest(classica.a1$random~1, alternative = "two.sided")
+dwtest(classica.a2$random~1, alternative = "two.sided")
+
+```
+
+in entrambi i casi il test ci porta a confermare l'incorrelazione dei residui anche se nel secondo caso con una sicurezza inferiore.
+
+**test sui punti di svolta**
+
+un ultimo test che ci rimane da fare è quello che si occupa di vedere se la serie si comporta casualmente o meno. 
+
+analizza proprio i punti di svolta, immaginando per semplicità una regressione che attraversa la serie, un punto di svolta possiamo vederlo come un cambio di direzione. 
+
+la statistica test è complessa:
+
+$$
+TPn=\frac{\frac{\hat{Pn}-2(n-2)}{3}}{\sqrt\frac{(16*n-29)}{90}}
+$$
+
+In ogni caso cercando online sono due le librerie che permettono il calcolo di questo test, i risultati però li lascio senza commento, i valori sono tutti uguali, forse sono giusti (dato che è lo stesso per entrambe le librerie) o forse un oggetto ts non è digeribile per come sono state pensate le funzioni.
+
+
+```{r}
+
+library(spgs)
+library(randtests)
+
+turningpoint.test(residui.a1)
+turningpoint.test(residui.a2)
+
+turning.point.test(res.stand.a1, alternative="two.sided")
+
+turning.point.test(residui.a2, alternative="two.sided")
+
+```
+
+
+## stima **trend**
+
+```{r}
+
+tempi.a<-seq(1:69)
+
+stimatrend.a1<-lm(classica.a1$trend~tempi.a)
+stimatrend.a2<-lm(classica.a2$trend~tempi.a)
+
+summary(stimatrend.a1)
+
+summary(stimatrend.a2)
+
+
+```
+
+il primo modello, relativo alla serie degli antinfiammatori, ci da un valore non significativo del tempo e ci accorgiamo anche di un $R^2$ per nulla soddisfacente, probabilmente sarebbe più opportuno stimarlo con un  quadratico
+
+il secondo modello invece ha un adattamento buono e un valore significativo sia dell'intercetta che della nostra esplicativa. ogni t abbiamo un aumento pari a 0,47492 della nostra variabile delle vendite.
+
+proviamo una stima del trend quadratico
+
+```{r}
+stimatrend.a1.1<-lm(classica.a1$trend~tempi.a+I(tempi.a^2))
+
+summary(stimatrend.a1.1)
+```
+i valori decisamente sono migliorati e anche significativi, anche se l'$R^2$ resta ancora non troppo soddisfacente
+
+
+# Decomposizione modello moltiplicativo
+
+andiamo adesso a rieffettuare tutte le analisi viste precedentemente, partendo però da un ipotesi di un modello moltiplicativo per entrambi, dai risultati visti fin'ora possiamo sperare che la serie storica sugli antistaminici, dati i risultati e data la presenza di una varianza che cambia col trend ci possa portare ad una decomposizione più soddisfacente.
+
+\
+\
+
+per semplicità di lettura e dato che la maggior parte di grafici e test sono già stati spiegati, ci limiteremo a rappresentare l'output dei comandi commentando solo i risultati più degni di nota, con una conclusione sul modello migliore scelto per le nostre serie
+
+
+```{r}
+
+classica.m1<-decompose(serie1, "multiplicative")
+autoplot(classica.m1,main = "decompose serie acido acetico, moltiplicativo", ts.colour = "red")
+
+classica.m2<-decompose(serie2, "multiplicative")
+autoplot(classica.m2, main = "decompose serie antistaminici, moltiplicativo", ts.colour = "red")
+
+
+```
+
+
+indici di stagionalita, questa volta ottenuti per rapporto
+
+```{r}
+indici.sm1<-classica.m1$figure
+indici.sm1
+
+indici.sm2<-classica.m2$figure
+indici.sm2
+
+```
+
+stagionalità molto forte nel caso della serie sugli antistaminici, pressochè assente sull'altra serie oggetto di osservazione
+
+\
+
+## Analisi residui modello moltiplicativo
+
+
+
+le ipotesi sulla componente erratica rimangono le stesse.
+
+## Analisi grafica
+
+
+togliamo gli NA dai residui e li rappresentiamo con un istogramma confrontandoli con una curva di densità normale
+
+
+
+
+
+```{r}
+library(ggpubr)
+
+residui.m1<-na.omit(classica.m1$random)
+summary(residui.m1)
+
+
+residui.m2<-na.omit(classica.m2$random)
+summary(residui.m2)
+
+
+e1.2<-autoplot(residui.m1, colour = 'steelblue', main = "Residui Acetic Acid")
+e2.2<-autoplot(residui.m2, colour = 'steelblue', main = "Residui Antistaminici")
+
+
+e1<-ggplot() +
+  geom_histogram(aes(x= residui.m1, y = stat(density)),color="darkblue", fill="lightblue") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.m1), sd = sd(residui.m1)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui acid acetic")
+
+
+e2<-ggplot() +
+  geom_histogram(aes(x= residui.m2, y = stat(density)),color="darkblue", fill="lightblue") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.m2), sd = sd(residui.m2)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui Antistaminici")
+
+plots4.1<-(list(e1.2,e2.2))
+marrangeGrob(plots4.1, nrow = 2, ncol=1)
+
+
+plots4.2<-list(e1,e2)
+marrangeGrob(plots4.2,nrow = 1, ncol=2)
+
+```
+\
+
+
+la serie sull'acido acetico ha un valore min e max molto più ristretti rispetto al modello additivo
+
+\
+\
+
+Procediamo con la standardizzazione dei residui
+
+
+```{r}
+residui.m1.vec<-as.vector(residui.m1)
+res.stand.m1<-(residui.m1.vec-mean(residui.m1.vec))/(var(residui.m1.vec)^0.5)
+
+
+residui.m2.vec<-as.vector(residui.m2)
+res.stand.m2<-(residui.m2.vec-mean(residui.m2.vec))/(var(residui.m2.vec)^0.5)
+
+
+
+
+e3<-ggplot() +
+  geom_histogram(aes(x= res.stand.m1, y = stat(density)),color="darkblue", fill="#F7D400") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(res.stand.m1), sd = sd(res.stand.m1)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui stand Acid Acetic")
+
+
+e4<-ggplot() +
+  geom_histogram(aes(x= res.stand.m2, y = stat(density)),color="darkblue", fill="#F7D400") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(res.stand.m2), sd = sd(res.stand.m2)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui stand Antistaminici")
+
+plots5<-list(e3,e4)
+marrangeGrob(plots5,nrow = 1, ncol=2)
+
+```
+
+**qqplot**
+
+
+```{r}
+
+
+qqnorm(res.stand.m1, main = "Acetic Acid", col="red")
+qqline(res.stand.m1, col = "blue", lwd = 2)
+
+qqnorm(res.stand.m2, main = "Antistaminici", col="blue")
+qqline(res.stand.m2, col = "red", lwd = 2)
+
+
+
+```
+
+andiamo ora ad effettuare dei test specifici.
+
+
+## Test sui residui modello moltiplicativo
+
+**test di specificazione**
+
+per verificare che il valore atteso dei residui sia 0
+
+```{r}
+#media per entrambi
+mean.res.m1<-mean(residui.m1)
+mean.res.m2<-mean(residui.m2)
+
+#numero osservazioni
+n.m1<-length(residui.m1)
+
+
+#varianza
+var1.m1<-(n.m1/(n.m1-1))*var(residui.m1)
+var2.m2<-(n.m1/(n.m1-1))*var(residui.m2)
+
+s.m1<-sqrt(var1.m1)
+s.m2<-sqrt(var2.m2)
+
+#valore test t per acetic acid
+test.t.m1<-(mean.res.m1/(s.m1/sqrt(n.m1)))
+pt(test.t.m1,n.m1-1,lower.tail=F)
+
+#valore test t per antistaminici
+test.t.m2<-(mean.res.m2/(s.m2/sqrt(n.m1)))
+pt(test.t.m2,n.m1-1,lower.tail=F)
+
+
+```
+i test ci portano alla concludere che la media dei residui è significativamente diversa da 0
+
+**NORMALITÀ**
+
+
+**Shapiro-Wilk**
+
+```{r}
+
+shapiro.test(res.stand.m1)
+shapiro.test(res.stand.m2)
+
+
+```
+
+**Jarque-Bera**
+
+
+
+```{r}
+jarque.bera.test(res.stand.m1)
+jarque.bera.test(res.stand.m2)
+```
+
+entrambi i test visti ci stanno suggerendo la normalità dei nostri dati
+
+\
+\
+
+**omoschedasticità**
+
+
+```{r}
+library(lmtest)
+
+
+bptest(classica.m1$random~1, varformula = ~ 1 + classica.m1$seasonal+ classica.m1$trend)
+bptest(classica.m2$random~1, varformula = ~ 1 + classica.m2$seasonal+ classica.m2$trend)
+
+```
+
+accettiamo l'ipotesi di omoschedasticità.
+
+
+\
+\
+
+**Autocorrelazione**
+\
+\
+iniziamo tracciando i correlogrammi dei residui
+
+```{r}
+
+autoplot(acf(res.stand.m1, lag.max = 20, plot=FALSE), main="Acetic acid")
+
+autoplot(acf(res.stand.m2, lag.max = 20, plot=FALSE), main="Antistaminici")
+
+
+```
+
+in entrambi i casi abbiamo un solo valori fuori dalle bande di confidenza
+
+procediamo con i test
+
+
+**Ljun-Box** 
+
+```{r}
+Box.test(res.stand.m1, lag=12, type = "Ljung-Box")
+Box.test(res.stand.m2, lag=12, type = "Ljung-Box")
+
+```
+
+**Box-Pierce**
+
+
+$$
+BP=n\sum^k_{t=1}r_t^2
+$$
+
+```{r}
+
+Box.test(res.stand.m1, lag=12, type = "Box-Pierce")
+Box.test(res.stand.m2, lag=12, type = "Box-Pierce")
+
+```
+
+
+**Durbin-Watson**
+
+
+```{r}
+
+dwtest(classica.m1$random~1, alternative = "two.sided")
+dwtest(classica.m2$random~1, alternative = "two.sided")
+
+```
+tutti i test ci suggeriscono di essere nel caso di incorrelazione dei residui
+
+**test sui punti di svolta**
+
+
+
+```{r}
+
+library(spgs)
+library(randtests)
+
+turningpoint.test(residui.m1)
+turningpoint.test(residui.m2)
+
+turning.point.test(res.stand.m1, alternative="two.sided")
+
+turning.point.test(residui.m2, alternative="two.sided")
+
+```
+
+i comandi che precedentemente sembravano dare risultati dubbiosi effettivamente sembrano funzionare, in entrambi i casi andiamo ad accettare l'ipotesi nulla di comportamento casuale dei nostri residui.
+
+
+## Stima **trend**
+
+```{r}
+
+
+stimatrend.m1<-lm(classica.m1$trend~tempi.a)
+stimatrend.m2<-lm(classica.m2$trend~tempi.a)
+
+summary(stimatrend.m1)
+
+summary(stimatrend.m2)
+
+
+```
+
+la situazione rispetto a prima non cambia, proviamo ugualmente una stima una stima del trend quadratico
+
+
+```{r}
+stimatrend.m1.1<-lm(classica.m1$trend~tempi.a+I(tempi.a^2))
+
+summary(stimatrend.m1.1)
+```
+
+# Conclusione Decomposizione
+
+dai risultati ottenuti possiamo optare per la prima serie per un modello additivo, dato che verifica tutte le ipotesi fatte sulla componente erratica, compresa la media a 0 che invece nel modello moltiplicativo non risulta.
+
+Per la serie sugli antistaminici invece optiamo per il modello moltiplicativo, andiamo completamente a migliorare i risultati sulla componente erratica.
+
+
+
+# medie mobili
+
+Andiamo ora, sempre a scopo descrittivo, a rappresentare il trend delle due serie storiche del modello scelto attraverso le medie mobili, un filtro come una "moving window" che ci porta a smussare i picchi.
+
+
+*serie storica acido acetico*
+
+```{r}
+medie.mobili.5.1<-filter(classica.a1$trend, filter = rep(1/5,5), sides=1)
+
+medie.mobili.3.1<-filter(classica.a1$trend, filter = rep(1/3,3), sides=1)
+
+
+
+plot.ts(cbind(classica.a1$trend,medie.mobili.5.1, medie.mobili.3.1), plot.type='single', col=c('black','blue','red'))
+
+plot.ts(cbind(classica.a1$trend,medie.mobili.5.1), plot.type='single', col=c('blue','red'))
+
+
+
+
+```
+
+*serie storica antistaminici*
+
+```{r}
+medie.mobili.5.2<-filter(classica.m2$trend, filter = rep(1/5,5), sides=1)
+
+medie.mobili.3.2<-filter(classica.m2$trend, filter = rep(1/3,3), sides=1)
+
+
+
+plot.ts(cbind(classica.m2$trend,medie.mobili.5.2, medie.mobili.3.2), plot.type='single', col=c('black','blue','red'))
+
+plot.ts(cbind(classica.m2$trend,medie.mobili.5.2), plot.type='single', col=c('blue','red'))
+
+```
+
+abbiamo rappresentato in entrambi i casi prima il trend con medie mobili a 3 e 5 termini, e poi un focus su trend e medie mobili a 5 termini.
+
+nel primo caso le medie mobili riescono a rappresentare bene il trend, i segnali che di solito si utilizzano nell'analisi tecnica a livello di incroci ci danno chiare indicazioni (ovviamente siamo a 5 termini quindi il ritardo nel segnale è più sostanziale)
+
+per la serie degli antistaminici però, più erratica, il lavoro delle medie mobili risulta più difficoltoso
+
+si noti inoltre come ovviamente andiamo a perdere k-1 termini ad inizio e fine della serie.
+
+
+# exp smoothing
+
+ci troviamo di fronte ad una serie che presenta un trend ma una stagionalità quasi trascurabile, ed un'altra serie che invece presenta una stagionalità molto marcata, possiamo provare per questo nel primo caso ad utilizzare l'Holt exponential smoothing, mentre nel secondo l'Holt-Winters exponential smoothing
+\
+\
+\
+
+## Holt Exponential Smoothing
+
+la formula holt contenuta nella library fpp2 automaticamente sceglierà i migliori valori di $\alpha$ e $\beta$, uno per stimare il livello medio come nell'exp smoothing semplice e l'altro per stimare il tasso di crescita, cioè il trend
+
+possiamo inoltre richiamare il "modello stimato" per vedere i valori dei parametri stimati
+
+```{r}
+library(fpp2)
+
+
+holt <- holt(serie1, h = 10)
+autoplot(holt)+
+  theme(legend.position = "bottom")
+
+holt$model
+```
+
+ovviamente la previsione tramite exoponential smoothing di questa serie risulta difficoltosa (e ricordiamo essere basata su trend lineare).
+
+\
+\
+
+## Holt-Winters
+
+lo vediamo quindi sulla serie degli antistaminici, questo è il metodo classico fatto a lezione, sia additivo che moltiplicativo
+
+```{r}
+par(mfrow=c(2,1))
+
+HoltW<-HoltWinters(serie2)
+plot(HoltW, main="additive Holt Winters")
+
+HoltW.m<-HoltWinters(serie2, seasonal = "multiplicative")
+plot(HoltW.m, main="multiplicative Holt Winters")
+
+
+hw.predict<-predict(HoltW, n.ahead=8)
+plot(hw.predict, main="additive Holt Winters")
+
+hw.predict.m<-predict(HoltW.m, n.ahead=8)
+plot(hw.predict.m, main="multiplicative Holt Winters")
+
+```
+
+per una visualizzazione alternativa, anche qui possiamo utilizzare la library fpp2
+
+il comando ets sta per error-trend-seasonality e ci permette all'interno di model di scegliere qualsiasi combinazione tra A che sta per additive, M per multiplicative e Z per sconosciuto oppure ancora N per NULL.
+
+avendo "scelto" un modello moltiplicativo useremo MMM cioè le nostre 3 componenti seguiranno un modello moltiplicativo
+
+```{r}
+hw <- ets(serie2, model = "MMM")
+autoplot(forecast(hw))
+```
+
+holtwinter per la sua stima minimizza il quadrato dell'errore di previsione, nessuno dei due risultati è perfett, nel modello moltiplicativo sembra che su due picchi sovrastimi ma al contrario l'additivo sembra sottostimare. 
+
+In ogni caso, anche rispetto alla prossima analisi moderna che vedremo, questo particolare esempio ci fa capire come uno strumento semplice come l'exp smoothing riesca a darci risultati più che soddisfacenti.
+
+
+
+
+# Introduzione Analisi moderna
+
+per iniziare l'analisi moderna, iniziamo con la rappresentazione dei correlogrammi, è chiaro che sappiamo già che entrambe le serie sono non stazionarie in media e in varianza.
+
+## correlogrammi acid acetic
+
+
+prima globale con acf e poi parziale con pacf
+
+```{r}
+par(mfrow=c(2,1))
+
+acf(serie1, lag.max=20, main="")
+
+pacf(serie1,lag.max=20, main="")
+
+```
+
+è interessante come in questo caso possiamo quasi ipotizzare una struttura autoregressiva
+
+## correlogrammi antistaminici
+
+
+```{r}
+
+par(mfrow=c(2,1))
+
+
+acf(serie2, lag.max=20, main="")
+
+pacf(serie2,lag.max=20, main="")
+
+```
+qui ritroviamo una stagionalità molto marcata
+
+
+# Analisi Moderna Acid Acetic
+
+## Trasformate
+
+**differenza prima**
+
+non avendo una marcata stagionalità procediamo con una semplice differenza prima (ricordiamo che ogni trasformazione con differenza prima che facciamo andiamo a perdere un ulteriore valore della nostra serie)
+
+
+```{r}
+
+#acid acetic
+serie1.diff1<-diff(serie1, lag=1, difference=1)
+
+plot(serie1.diff1)
+
+par(mfrow=c(2,1))
+
+acf(serie1.diff1, lag.max = 20, main="")
+pacf(serie1.diff1, lag.max = 20, main="")
+
+```
+
+rimaniamo con una sostenziale non stazionarietà in varianza, proviamo perciò a ripetere il processo applicando prima una trasformata logaritmica, in ogni caso il processo più che una stagionalità sembra suggerirci degli impulsi casuali
+
+```{r}
+serie1.log<-log10(serie1)
+serie1.diff1<-diff(serie1.log, lag=1, difference=1)
+
+plot(serie1.diff1)
+
+par(mfrow=c(2,1))
+
+acf(serie1.diff1, lag.max = 20, main="" )
+pacf(serie1.diff1, lag.max = 20, main="")
+```
+
+abbiamo dei valori nel nostro correlogramma, a lag non stagionali, che non siamo riusciti a depurare, in ogni caso ci accorgiamo di come il globale si annulli ad eccezione di qualche impulso, per un $k>1$ mentre il parziale sembra indicare un decadimento esponenziale anche se dopo il primo valore che quasi rientra nelle bande sembra andare a risalire per poi decadere completamente.
+
+proviamo per questo a stimare un MA(1) ma successivamente utilizzeremo la funzione auto.arima per stimare una modello che probabilmente presenterà qualche forma di stagionalità o integrazione.
+
+## Stima ARMA
+
+
+```{r}
+ma.1.1<-arma(serie1.diff1, order = c(0,1), include.intercept = TRUE)
+summary(ma.1.1)
+
+
+ma.1.2<-arma(serie1.diff1, order = c(0,1), include.intercept = FALSE)
+summary(ma.1.2)
+
+
+
+```
+
+il modello con costante ci da un parametro per la costante non significativa, l'aic inoltre risulta più alto. 
+
+La costante è spesso inserita per migliorare la stima proprio perchè le varie trasformazioni incidono sostanzialmente sulla media, nel nostro caso comunque non è risultata utile.
+
+più soddisfacente invece il risultato del nostro parametro $\theta$
+
+questo modello sembra indicarci che l'osservazione dipende da un impulso casuale osservato sul periodo precedente con un peso pari a $-0.63544$
+
+l'equazione quindi del modello analizzato risulta la seguente:
+
+$$
+Y_t=\epsilon_t - (-0.639456)a_{t-1}
+$$
+
+\
+\
+
+## Stima Auto.Arima
+
+
+volendo ora utilizzare la funzione auto.arima, potremmo fornirgli la serie originaria e lasciare al software la scelta del modello migliore, andiamo invece ad utilizzare come input la serie trasformata, in quanto abbiamo individuato un comportamento di base e dai risultati dei correlogrammi sappiamo che c'è un'eventuale componente stagionale o un impulso casuale che forse possono dipendere da una stagionalità rimasta nella serie.
+
+procediamo quindi con la library forecast e la funzione auto.arima
+
+```{r}
+
+library(forecast)
+
+arima1<-auto.arima(serie1.diff1, approximation=FALSE, trace=TRUE)
+summary(arima1)
+
+
+coeftest(arima1)
+
+
+ 
+
+```
+
+
+effettuando il controllo del valore della statistica test per i coefficienti, nell'esempio $\frac{\theta}{S.E.(\theta)}$. abbiamo un valore pari a $5.96838$ per la statistica test del parametro $MA_1$ e un valore pari a $1.92183$ per il valore $SAR_1$, possiamo sicuramente accettare il parametro nel primo caso ma nel secondo siamo appena fuori i termini di significatività. 
+
+in ogni caso procediamo con i noti test sui residui, a parte la significatività i parametri sono inferiori all'unità.
+
+
+fuori tesina abbiamo effettuato anche una prova inserendo "stationary=TRUE" tra le opzioni, i risultati della funzione auto.arima erano identici a conferma che la stazionarietà in media è stata raggiunta con le trasformazioni. 
+
+utilizzando invece "seasonal=FALSE" il modello restituito è esattamente un MA(1) come stimato precedentemente; ci accorgiamo infatti dalla traccia di tutti i modelli che l'MA(1) restava una buona approssimazione dopo il modello scelto (valore AIC).
+
+
+
+visualizziamo la nostra serie ricostruita dal modello a confronto con l'originale
+
+```{r}
+
+plot(serie1.diff1, main="ricostruzione")
+lines(arima1$fitted, col="#B30000", lwd = 2)
+
+```
+
+nonostante l'auto.arima, notiamo che c'è una qualche componente residua o del quale non siamo a conoscenza che il modello proprio non riesce a cogliere.
+
+\
+\
+
+
+## Analisi Residui *auto.arima*
+
+prima ancora dei residui, la funzione autoplot applicata al modello ci permette di visualizzare le radici dell'equazione caratteristica nel cerchio unitario, come vediamo dal parametro rientriamo nell'ipotesi di invertibilità.
+
+```{r}
+
+
+library(ggfortify)
+
+autoplot(arima1)
+
+```
+
+
+
+```{r}
+residui.auto.1<-arima1$residuals
+
+summary(residui.auto.1)
+
+ggplot(arima1, aes(x = arima1$fitted, y = arima1$resid))+
+    geom_point(shape=20, size=3)+
+    geom_smooth(method=lm)+
+    theme_minimal()
+
+
+```
+
+```{r}
+
+
+
+g1<-autoplot(residui.auto.1, colour = '#F71300', main = "Residui Acetic Acid")
+
+
+
+g2<-ggplot() +
+  geom_histogram(aes(x= residui.auto.1, y = stat(density)),color="darkblue", fill="#00F789") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.auto.1), sd = sd(residui.auto.1)), 
+    lwd = 2, 
+    col = 'red'
+  )
+
+
+plots6<-(list(g1,g2))
+marrangeGrob(plots6, nrow = 2, ncol=1)
+
+
+```
+
+media e mediana sono molto vicine, il plot ci mostra una distribuzione dei residui casuale.
+
+\
+
+Procediamo con la standardizzazione dei residui
+
+
+```{r}
+#residui.m1.vec<-as.vector(residui.m1)
+res.stand.arima1<-(residui.auto.1-mean(residui.auto.1))/(var(residui.auto.1)^0.5)
+
+
+ggplot() +
+  geom_histogram(aes(x= residui.auto.1, y = stat(density)),color="darkblue", fill="#FF3FF6") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.auto.1), sd = sd(residui.auto.1)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui stand Acid Acetic")
+
+
+```
+
+**qqplot**
+
+
+```{r}
+
+
+qqnorm(res.stand.arima1, main = "Acetic Acid", col="#7F0707")
+qqline(res.stand.arima1, col = "#040B84", lwd = 2)
+
+
+```
+
+andiamo ora ad effettuare dei test specifici.
+
+## Test
+
+**test di specificazione**
+
+per verificare che il valore atteso dei residui sia 0
+
+```{r}
+#media per entrambi
+mean.res.1<-mean(res.stand.arima1)
+
+#numero osservazioni
+n1<-length(res.stand.arima1)
+
+
+#varianza
+var1<-(n1/(n1-1))*var(res.stand.arima1)
+
+
+s1<-sqrt(var1)
+
+#valore test t per acetic acid
+test.t.1<-(mean.res.1/(s1/sqrt(n1)))
+pt(test.t.1,n1-1,lower.tail=F)
+
+
+```
+
+possiamo confermare l'ipotesi dei residui a media 0
+
+
+
+**Normalità**
+
+**Shapiro-Wilk e Jarque-Bera**
+
+```{r}
+
+shapiro.test(res.stand.arima1)
+jarque.bera.test(res.stand.arima1)
+
+```
+
+entrambi i test visti ci stanno suggerendo la normalità dei nostri dati
+
+\
+\
+
+**omoschedasticità**
+
+il test di durbin-watson nella classica libreria lm non permette l'utilizzo con l'oggetto della funzione auto.arima, possiamo calcolare "a mano" il valore della statistica test, sappiamo dalla teoria che un valore di due indica che non è presente alcuna correlazione
+
+```{r}
+
+testdw1 = sum((arima1$residuals - lag(arima1$residuals))^2, na.rm = TRUE) /
+       sum(arima1$residuals^2, na.rm = TRUE)
+
+testdw1
+
+```
+accettiamo l'ipotesi di omoschedasticità.
+
+
+\
+\
+
+**Autocorrelazione**
+\
+\
+iniziamo tracciando il correlogramma dei residui
+
+```{r}
+
+autoplot(acf(res.stand.arima1, lag.max = 20, plot=FALSE), main="Acetic acid")
+
+
+```
+i valori sono ampiamente all'interno delle bande di confidenza
+
+andiamo comunque a verificarlo con i soliti test
+
+
+**Ljun-Box** 
+
+omettiamo il test di Box-Pierce in quanto sappiamo che questo è preferibile
+
+```{r}
+Box.test(res.stand.arima1, lag=12, type = "Ljung-Box")
+
+```
+il test ci conferma l'incorrelazione dei nostri dati
+
+
+
+
+**Durbin-Watson**
+
+
+```{r}
+
+dwtest(classica.m1$random~1, alternative = "two.sided")
+
+```
+tutti i test ci suggeriscono di essere nel caso di incorrelazione dei residui
+
+**test sui punti di svolta**
+
+
+
+```{r}
+
+turningpoint.test(res.stand.arima1)
+
+
+turning.point.test(res.stand.arima1, alternative="two.sided")
+
+
+```
+anche il comportamento casuale è confermato, ipotesi che era già chiara dal grafico visto precedentemente.
+
+
+## **Previsioni** Acetic Acid
+
+utilizziamo la funzione forecast per effettuare previsioni, poniamo un numero di previsioni alto, pari a 24, proprio per vedere come per periodi troppo lunghi portino la previsione a coincidere con il livello medio della serie
+
+```{r}
+forecast_1<-forecast(arima1, h=36)
+autoplot(forecast_1)
+
+accuracy(forecast_1)
+```
+
+il modello stimato, che sappiamo soddisfare tutte le ipotesi per la modellistica SARIMA ci sta dicendo che l'osservazione al tempo t dipende da una somma pesata di impulsi casuali, in particolare un impulso casuale del periodo precedente con un peso pari a $-0.6131$ + un impulso casuale pari ai 12 mesi precedenti pari a $0.0997$, certamente, quest'ultimo, di entità più trascurabile, più la componente erratica al tempo t.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Analisi Moderna Antistaminici
+
+## Trasformate
+
+iniziamo con una differenza prima, dalla serie, però dal correlogramma e da quanto già analizzato sappiamo di una stagionalità annuale, faremo per questo una trasformazione del tipo: 
+
+$$
+Y^*_t=Log(Yt)(1-B)(1-B^{12})
+$$
+ovvero logaritmica per poi fare una differenza prima e successivamente una differenza dodicesima, andremo a rappresentare ogni volta i risultati ottenuti
+
+ricordiamo che effettuare una trasformazione logaritmica equivale a porre $\lambda=0$ nel procedimento della trasformata di Box-Cox
+
+```{r}
+#ANTISTAMINICI
+par(mfrow=c(2,1))
+
+serie2.log<-log(serie2)
+serie2.log.diff1<-diff(serie2, lag=1, difference=1)
+
+plot(serie2.log, main="log")
+plot(serie2.log.diff1, main="differenza prima")
+
+par(mfrow=c(1,1))
+
+serie2.log.diff12<-diff(serie2.log.diff1, lag=1, differences = 12)
+plot(serie2.log.diff12)
+
+
+seriediff12<-diff(serie2.log.diff1, lag=12, difference=1)
+
+
+```
+
+abbiamo ottenuto una serie stazionaria in media ma rimane ancora una spiccata stagionalità.
+
+procediamo comunque con i correlogrammi, li vediamo in ordine per ogni trasformazione effettuata
+
+
+```{r}
+par(mfrow=c(2,1))
+
+acf(serie2.log, lag.max=20, main="log")
+
+pacf(serie2.log,lag.max=20, main="")
+
+
+
+acf(serie2.log.diff1, lag.max=20, main="differenza prima")
+
+pacf(serie2.log.diff1,lag.max=20, main="")
+
+
+acf(serie2.log.diff12, lag.max=20, main="differenza prima-dodicesima")
+
+pacf(serie2.log.diff12,lag.max=20, main="")
+
+
+```
+
+guardando in particolare gli ultimi correlogrammi globale e parziale, relativi alla serie trasformata come deciso inzialmente, ci accorgiamo che i comportamenti sono simili, eccetto un lag negativo opposto all'altro.
+
+in ogni caso i risultati dei correlogrammi non sono soddisfacenti, ho omesso le molteplici prove fatte per cercare di migliorare la situazione e rimanendo nell'ottica che effettuare troppe trasformazioni porta a perdere eccessivamente quella che è la variabilità iniziale dei nostri dati, proveremo a stimare un ARMA(1,1) e un ARMA(2,2) con la consapevolezza che nel successivo passaggio possiamo nuovamente sfruttare la funzione auto.arima per avere un modello più accurato.
+
+\
+
+## Stima ARMA
+
+```{r}
+
+arma1.1<-arma(serie2.log.diff1, order = c(1,1), include.intercept = FALSE)
+summary(arma1.1)
+
+arma2.2<-arma(serie2.log.diff1, order = c(2,2), include.intercept = FALSE)
+summary(arma2.2)
+
+
+```
+
+ci troviamo nuovamente in una situazione dubbia, l'aic del primo modello è più alto ma la significatività dei parametri è decisamente maggiore, in modulo i parametri AR sono inferiori all'unità, confermando la stazionarietà del nostro modello ma lo stesso non accade per quanto riguarda i parametri MA, avere un valore superiore ad 1 (o anche molto vicino) ci porta a non poter supportare l'ipotesi di invertibilità del modello. 
+
+nonostante l'AIC quindi, il primo modello sembra un opzione migliore, con la consapevolezza che comunque non risulta sicuramente il modello più adatto a descrivere il nostro fenomeno.
+
+l'equazione possiamo così scriverla:
+
+$$
+Yt=-0.65579\:Y_{t-1}+\epsilon_t \,-\,0.898\;Y_{t-1}
+$$
+
+
+ricordiamo ora la formula dell'AIC **Akaike Information Criterion**:
+
+$$
+AIC(k)=n \; log\;(\sigma^2_k) + 2k    \;\;\;\;\;\;\; k=numero\; parametri
+$$
+
+come possiamo vedere presenta un fattore di penalizzazione dovuto al numero dei parametri.
+
+\
+\
+
+## Stima Auto.Arima
+
+utilizziamo perciò la funzione auto.arima, in questo caso sicuramente più utile di prima, ci poniamo però diversamente fin da subito; considerando che la funzione riesce ad operare sia con stagionalità che con non stazionarietà gli passiamo un modello stazionario in media ma evitiamo il passaggio della differenza dodicesima, sarà la stessa funzione che ci restiuitirà il modello più adatto.
+
+
+
+```{r}
+arima2<-auto.arima(serie2.log.diff1, trace = TRUE)
+summary(arima2)
+
+
+coeftest(arima2)
+
+
+```
+
+dall'output della traccia ci accorgiamo che effettivamente tra le opzioni della classe ARMA e non SARIMA il modello migliore risulta proprio ARMA(1,1).
+
+nuovamente la funzione coefplot ci restituisce la significatività dei nostri parametri, il parametro MA2 risulta non significativo
+
+l'invertibilità del modello rimane dubbia considerando il valore dei parametri MA, procediamo comunque anche in questo caso con la solita analisi e test dei residui, prima però visualizziamo la ricostruzione della nostra serie attraverso il modello
+
+```{r}
+plot(serie2.log.diff1, main="ricostruzione")
+lines(arima2$fitted, col="#B30000", lwd = 2)
+
+```
+
+il risultato resta soddisfacente solo in parte, quei picchi di stagionalità sono completamente persi, vengono colti però i picchi verso il basso.
+
+
+
+
+## Analisi Residui *auto.arima*
+
+facciamo gli stessi passaggi precedenti anche sulla seconda serie
+
+```{r}
+
+autoplot(arima2)
+
+```
+
+l'autoplot in questo caso ci restituisce i risultati dell'equazione caratteristica sia per la verifica della stazionarietà (AR) che per l'invertibilità (MA). 
+
+anche in questo caso i parametri MA non sono convincenti.
+
+
+```{r}
+residui.auto.2<-arima2$residuals
+
+summary(residui.auto.2)
+
+ggplot(arima2, aes(x = arima2$fitted, y = arima2$resid))+
+    geom_point(shape=20, size=3)+
+    geom_smooth(method=lm)+
+    theme_minimal()
+
+
+```
+
+il plot dei residui in questo caso è meno rassicurante. il minimo e massimo sono molto alti, media e mediana sono lontane
+
+```{r}
+
+
+
+h1<-autoplot(residui.auto.2, colour = '#F71300', main = "Residui Antistaminici")
+
+
+
+h2<-ggplot() +
+  geom_histogram(aes(x= residui.auto.2, y = stat(density)),color="darkblue", fill="#00F789") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.auto.2), sd = sd(residui.auto.2)), 
+    lwd = 2, 
+    col = 'red'
+  )
+
+
+plots7<-(list(h1,h2))
+marrangeGrob(plots7, nrow = 2, ncol=1)
+
+
+```
+
+la distribuzione è molto lontana da una normale.
+
+
+\
+\
+
+standardizziamo
+
+
+```{r}
+res.stand.arima2<-(residui.auto.2-mean(residui.auto.2))/(var(residui.auto.2)^0.5)
+
+
+ggplot() +
+  geom_histogram(aes(x= residui.auto.2, y = stat(density)),color="darkblue", fill="#040B84") +
+  stat_function(
+    fun = dnorm, 
+    args = list(mean = mean(residui.auto.2), sd = sd(residui.auto.2)), 
+    lwd = 2, 
+    col = 'red'
+  )+
+  labs(title="Residui stand Antistaminici")
+
+
+```
+
+**qqplot**
+
+
+```{r}
+
+
+qqnorm(res.stand.arima2, main = "Antistaminici", col="#840404")
+qqline(res.stand.arima2, col = "#040B84", lwd = 2)
+
+
+```
+
+anche il qqplot non ci mostra dei risultati soddisfacenti, confermiamo le ipotesi con i test.
+
+\
+
+## Test
+
+**test di specificazione**
+
+per verificare che il valore atteso dei residui sia 0
+
+```{r}
+#media per entrambi
+mean.res.2<-mean(res.stand.arima2)
+
+#numero osservazioni
+n2<-length(res.stand.arima2)
+
+
+#varianza
+var2<-(n2/(n2-1))*var(res.stand.arima2)
+
+
+s2<-sqrt(var2)
+
+#valore test t per acetic acid
+test.t.2<-(mean.res.2/(s2/sqrt(n2)))
+pt(test.t.2,n2-1,lower.tail=F)
+
+
+```
+
+il test sembra suggerirci la media a 0 dei nostri residui
+
+\
+
+**Normalità**
+
+
+**Shapiro-Wilk e Jarque-Bera**
+
+```{r}
+
+shapiro.test(res.stand.arima2)
+jarque.bera.test(res.stand.arima2)
+
+```
+i test ci confermano che la nostra distribuzione dei residui non è distribuita come una normale, siamo costretti a rifiutare l'ipotesi nulla.
+\
+\
+
+**omoschedasticità**
+
+Nuovamente il test di durbin-watson svolto come prima.
+
+```{r}
+
+testdw2 = sum((arima1$residuals - lag(arima1$residuals))^2, na.rm = TRUE) /
+       sum(arima1$residuals^2, na.rm = TRUE)
+
+testdw2
+
+```
+
+accettiamo l'ipotesi di omoschedasticità.
+
+
+\
+\
+
+**Autocorrelazione**
+\
+\
+iniziamo tracciando il correlogramma dei residui
+
+```{r}
+
+autoplot(acf(res.stand.arima2, lag.max = 20, plot=FALSE), main="Acetic acid")
+
+
+```
+ritroviamo due valori significativi, sembra esserci autocorrelazione
+
+andiamo comunque a verificarlo con i soliti test
+
+
+**Ljun-Box** 
+
+
+```{r}
+Box.test(res.stand.arima2, lag=12, type = "Ljung-Box")
+
+```
+il p-value pari a 0.058 ci conferma infatti che siamo ai limiti, avremmo preferito un p value più alto
+
+
+
+
+
+**test sui punti di svolta**
+
+
+
+```{r}
+
+turningpoint.test(res.stand.arima2)
+
+
+turning.point.test(res.stand.arima2, alternative="two.sided")
+
+
+```
+un aspetto però migliore ci arriva dal test sui punti di svolta, il comportamento casuale è confermato.
+
+
+possiamo concludere che il modello non si comporta benissimo, siamo ai limiti dell'invertibilità, non abbiamo dei residui convincenti dal punto di vista della distribuzione, non sono normali, l'ipotesi di incorrelazione è ai limiti.
+
+andiamo comunque ad effettuare le nostre previsioni.
+
+
+## **Previsioni** Acetic Acid
+
+utilizziamo nuovamente la funzione forecast per effettuare previsioni, ci fermiamo ad 8 tempi.
+
+```{r}
+forecast_2<-forecast(arima2, h=8)
+autoplot(forecast_2)
+
+accuracy(forecast_2)
+
+```
+
+nonostante il modello non propriamente accettabile notiamo che almeno a livello descrittivo la previsione può avere una sua logica.
+
+in questo caso abbiamo di fronte un modello di nuovo ai limiti di accettazione dell'invertibilità, con una distribuzione dei residui che ci lascia dubbi in quanto non è confermata la normalità e l'incorrelazione è ai limiti dell'accettabilità. il modello ci dice che l'osservazione al tempo t dipende per una componente autoregressiva dall'osservazione precedente con un peso pari a $-0.5384$ - un'impulso casuale del periodo precedente pari a $0.0073$ (che ricordiamo essere non significativa e infatti di entità molto trascurabile) - un impulso casuale dei due tempi precedenti pari a $-0.9288$ + una componente autoregressiva stagionale dei 12 mesi precedenti pari ad un peso di $0.7318$ + la classica componente erratica.
+
+
+
+
+

@@ -18,17 +18,17 @@ Description of code is written in Italian, feel free to contact me for any quest
 
 <p align="center">
 classical: <br/>
-<img src="https://i.imgur.com/kRxjdAn.png" height="50%" width="50%" alt="example 1"/>
+<img src="https://i.imgur.com/kRxjdAn.png" height="50%" width="50%" alt="classic"/>
 <br />
 <br />
 Holt-Winters predictions:  <br/>
-<img src="https://i.imgur.com/PIcuKkT.png" height="50%" width="50%" alt="example 2"/>
+<img src="https://i.imgur.com/PIcuKkT.png" height="50%" width="50%" alt="HW"/>
 <br />
 Correlograms:  <br/>
-<img src="https://i.imgur.com/sfBGNZY.png" height="50%" width="50%" alt="example 2"/>
+<img src="https://i.imgur.com/sfBGNZY.png" height="50%" width="50%" alt="Corr"/>
 <br />
 Arima:  <br/>
-<img src="https://i.imgur.com/5MU3tlH.png" height="70%" width="70%" alt="example 2"/>
+<img src="https://i.imgur.com/5MU3tlH.png" height="70%" width="70%" alt="Arima"/>
 <br />
 
 <!--
